@@ -22,13 +22,13 @@ def _init_datos(conn: sqlite3.Connection) -> None:
         return  # ya hay datos, no duplicar
 
     conn.execute(
-        "INSERT INTO perfiles (nombre, metas, estado, user_id) VALUES (?, ?, ?, ?)",
-        ("", "[]", "", 1),
+        "INSERT INTO perfiles (nombre, metas, estado) VALUES (?, ?, ?)",
+        ("", "[]", ""),
     )
 
     conn.execute(
-        "INSERT INTO chats (tipo, ref_id, nombre, user_id) VALUES (?, ?, ?, ?)",
-        ("general", None, "General", 1),
+        "INSERT INTO chats (tipo, ref_id, nombre) VALUES (?, ?, ?)",
+        ("general", None, "General"),
     )
 
     conn.execute(
