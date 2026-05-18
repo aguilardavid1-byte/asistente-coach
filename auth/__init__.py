@@ -128,7 +128,7 @@ def register_post():
 
 @auth_bp.route("/google/login")
 def google_login():
-    oauth = current_app.extensions.get("authlib_oauth")
+    oauth = current_app.extensions.get("authlib.integrations.flask_client")
     if not oauth:
         return "Error: OAuth no configurado", 500
     redirect_uri = url_for("auth.google_callback", _external=True)
@@ -137,7 +137,7 @@ def google_login():
 
 @auth_bp.route("/google/callback")
 def google_callback():
-    oauth = current_app.extensions.get("authlib_oauth")
+    oauth = current_app.extensions.get("authlib.integrations.flask_client")
     if not oauth:
         return "Error: OAuth no configurado", 500
     token = oauth.google.authorize_access_token()
