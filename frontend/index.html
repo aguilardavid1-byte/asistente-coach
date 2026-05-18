@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Asistente Coach</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#075e54" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Coach" />
+</head>
+<body>
+  <div id="app">
+    <!-- ─── Overlay para móvil ────────────────────── -->
+    <div id="sidebar-overlay"></div>
+
+    <!-- ─── Sidebar ──────────────────────────────── -->
+    <aside id="sidebar">
+      <header id="sidebar-header">
+        <h1>🤖 Asistente Coach</h1>
+      </header>
+      <nav id="nav"></nav>
+    </aside>
+
+    <!-- ─── Chat ─────────────────────────────────── -->
+    <main id="chat-area">
+      <header id="chat-header">
+        <button id="hamburger-btn">☰</button>
+        <div id="chat-header-info">
+          <span id="chat-title">General</span>
+          <span id="chat-subtitle"></span>
+        </div>
+      </header>
+
+      <div id="messages"><div class="empty-state">Selecciona un chat</div></div>
+
+      <div id="input-bar">
+        <button id="attach-btn" title="Adjuntar imagen">📎</button>
+        <div id="image-preview" class="hidden">
+          <img id="preview-img" alt="Vista previa">
+          <button id="remove-image-btn">&times;</button>
+        </div>
+        <input
+          type="text"
+          id="message-input"
+          placeholder="Escribe tu mensaje..."
+          autofocus
+        />
+        <button id="send-btn">Enviar</button>
+      </div>
+    </main>
+  </div>
+
+  <input type="file" id="file-input" accept="image/*" hidden />
+
+  <script src="app.js"></script>
+</body>
+</html>

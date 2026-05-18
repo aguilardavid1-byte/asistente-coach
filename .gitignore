@@ -1,0 +1,9 @@
+watch.py
+run.sh
+.env
+asistente.db
+imagenes/
+__pycache__/
+.venv/
+*.pyc
+debug.log
