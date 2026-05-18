@@ -565,9 +565,24 @@
     }
   });
 
+  /* ─── Profile / Logout ──────────────────────────── */
+  async function cargarPerfil() {
+    try {
+      const r = await fetch("/auth/me");
+      if (!r.ok) return;
+      const data = await r.json();
+      document.getElementById("user-name").textContent = data.nombre || data.email || "";
+    } catch {}
+  }
+
+  document.getElementById("logout-btn").addEventListener("click", () => {
+    window.location.href = "/auth/logout";
+  });
+
   /* ─── Init ─────────────────────────────────────── */
   async function init() {
     try {
+      await cargarPerfil();
       const navData = await apiNav();
       renderNav(navData);
 
