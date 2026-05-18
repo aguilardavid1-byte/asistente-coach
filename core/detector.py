@@ -65,7 +65,7 @@ REGLAS CRÍTICAS - LEE EL CONTEXTO:
   * Entretenimiento, series, películas → "Películas por ver"
   * Barba, cabeza, zapatos, ropa, presentación personal → "Presentación personal"
   * Ejercicio, calistenia, rutina, salud, deporte → "Salud y ejercicio"
-	  * Silla, monitor, escritorio, espacio de trabajo, equipos → "Espacio de trabajo"
+  * Silla, monitor, escritorio, espacio de trabajo, equipos → "Espacio de trabajo"
 - NUNCA dejes "grupo" vacío — SIEMPRE clasifica en uno de los 7 objetivos
 - "tareas_nuevas": SOLO si hay NUEVAS tareas listadas (no si solo habla de existentes), O si el coach dice haber creado una tarea nueva
 - NO trates actividades con nombres diferentes como duplicados — cada materia tiene sus propias actividades
@@ -85,12 +85,13 @@ def _parsear_json(texto: str) -> dict[str, Any]:
         return {"tareas_nuevas": [], "tareas_actualizadas": [], "perfil": {}, "acciones": []}
 
 
-def detectar_entidades(texto_respuesta: str, chat_id: int = 0) -> dict[str, Any]:
+def detectar_entidades(texto_respuesta: str, chat_id: int = 0, user_id: int = 0) -> dict[str, Any]:
     """Analiza el texto del coach y extrae tareas, cambios, perfil y acciones.
 
     Args:
         texto_respuesta: texto del coach.
         chat_id: ID del chat donde ocurre (para contexto de subgrupos).
+        user_id: ID del usuario propietario.
 
     Retorna:
         dict con claves: tareas_nuevas, tareas_actualizadas, perfil, acciones
@@ -103,9 +104,9 @@ def detectar_entidades(texto_respuesta: str, chat_id: int = 0) -> dict[str, Any]
     if chat_id:
         try:
             conn = get_db()
-            chat = conn.execute("SELECT tipo, ref_id, nombre FROM chats WHERE id=?", (chat_id,)).fetchone()
+            chat = conn.execute("SELECT tipo, ref_id, nombre FROM chats WHERE id=? AND user_id=?", (chat_id, user_id)).fetchone()
             if chat and chat["tipo"] == "grupo" and chat["ref_id"]:
-                padre = conn.execute("SELECT id, nombre FROM grupos WHERE id=?", (chat["ref_id"],)).fetchone()
+                padre = conn.execute("SELECT id, nombre FROM grupos WHERE id=? AND user_id=?", (chat["ref_id"], user_id)).fetchone()
                 if padre:
                     contexto_chat = f'\nCONTEXTO: El usuario está en el grupo "{padre["nombre"]}".\nLas nuevas materias que mencionen deben crearse como SUBGRUPOS de este grupo.\n'
             conn.close()
@@ -135,11 +136,12 @@ def _slug(titulo: str) -> str:
     return safe.replace(" ", "-")
 
 
-def _get_parent_id(conn, chat_id: int) -> int | None:
-    """Si el chat es de tipo 'grupo', retorna su ref_id como posible parent_id para subgrupos."""
+def _get_parent_id(conn, chat_id: int, user_id: int) -> int | None:
+    """Si el chat es de tipo 'grupo', retorna su ref_id como posible parent_id para subgrupos.
+    Filtra por user_id."""
     try:
         chat = conn.execute(
-            "SELECT tipo, ref_id FROM chats WHERE id=?", (chat_id,)
+            "SELECT tipo, ref_id FROM chats WHERE id=? AND user_id=?", (chat_id, user_id)
         ).fetchone()
         if chat and chat["tipo"] == "grupo" and chat["ref_id"]:
             return chat["ref_id"]
@@ -148,12 +150,13 @@ def _get_parent_id(conn, chat_id: int) -> int | None:
     return None
 
 
-def aplicar_detecciones(detecciones: dict[str, Any], chat_id: int) -> dict:
+def aplicar_detecciones(detecciones: dict[str, Any], chat_id: int, user_id: int) -> dict:
     """Guarda en DB lo detectado.
 
     Args:
         detecciones: salida de detectar_entidades()
         chat_id: ID del chat donde ocurrió
+        user_id: ID del usuario propietario
 
     Returns:
         dict con reportes detallados:
@@ -170,7 +173,7 @@ def aplicar_detecciones(detecciones: dict[str, Any], chat_id: int) -> dict:
         "tareas_actualizadas": [],
     }
 
-    parent_id = _get_parent_id(conn, chat_id)
+    parent_id = _get_parent_id(conn, chat_id, user_id)
 
     # ── Perfil ────────────────────────────────────────────────────────────
     perfil = detecciones.get("perfil") or {}
@@ -184,8 +187,9 @@ def aplicar_detecciones(detecciones: dict[str, Any], chat_id: int) -> dict:
             updates.append("estado = ?")
             params.append(perfil["estado_animo"])
         if updates:
+            params.append(user_id)
             conn.execute(
-                f"UPDATE perfiles SET {', '.join(updates)} WHERE id = 1",
+                f"UPDATE perfiles SET {', '.join(updates)} WHERE user_id = ?",
                 params,
             )
 
@@ -201,7 +205,7 @@ def aplicar_detecciones(detecciones: dict[str, Any], chat_id: int) -> dict:
 
         if grupo_nombre:
             row = conn.execute(
-                "SELECT id, nombre FROM grupos WHERE slug = ?", (grupo_nombre,)
+                "SELECT id, nombre FROM grupos WHERE slug = ? AND user_id = ?", (grupo_nombre, user_id)
             ).fetchone()
             if row:
                 grupo_id = row["id"]
@@ -210,27 +214,27 @@ def aplicar_detecciones(detecciones: dict[str, Any], chat_id: int) -> dict:
                 # Crear como subgrupo si hay parent_id
                 if parent_id is not None:
                     conn.execute(
-                        "INSERT INTO grupos (slug, nombre, parent_id) VALUES (?, ?, ?)",
-                        (grupo_nombre, t["grupo"].strip(), parent_id),
+                        "INSERT INTO grupos (slug, nombre, parent_id, user_id) VALUES (?, ?, ?, ?)",
+                        (grupo_nombre, t["grupo"].strip(), parent_id, user_id),
                     )
                 else:
                     conn.execute(
-                        "INSERT INTO grupos (slug, nombre) VALUES (?, ?)",
-                        (grupo_nombre, t["grupo"].strip()),
+                        "INSERT INTO grupos (slug, nombre, user_id) VALUES (?, ?, ?)",
+                        (grupo_nombre, t["grupo"].strip(), user_id),
                     )
                 grupo_id = conn.execute(
-                    "SELECT id FROM grupos WHERE slug = ?", (grupo_nombre,)
+                    "SELECT id FROM grupos WHERE slug = ? AND user_id = ?", (grupo_nombre, user_id)
                 ).fetchone()["id"]
                 grupo_nombre_real = t["grupo"].strip()
                 from core.chats import asegurar_chat_grupo
-                asegurar_chat_grupo(grupo_id, grupo_nombre, grupo_nombre_real)
+                asegurar_chat_grupo(grupo_id, grupo_nombre, grupo_nombre_real, user_id)
                 parent_str = f" → (subgrupo de grupo {parent_id})" if parent_id is not None else ""
                 reporte["grupos_creados"].append({"nombre": grupo_nombre_real, "id": grupo_id})
 
         conn.execute(
-            """INSERT INTO tareas (grupo_id, titulo, prioridad)
-               VALUES (?, ?, ?)""",
-            (grupo_id, titulo, t.get("prioridad", "media")),
+            """INSERT INTO tareas (grupo_id, titulo, prioridad, user_id)
+               VALUES (?, ?, ?, ?)""",
+            (grupo_id, titulo, t.get("prioridad", "media"), user_id),
         )
         tarea_id = conn.execute("SELECT MAX(id) FROM tareas").fetchone()[0]
         reporte["tareas_creadas"].append({
@@ -242,8 +246,8 @@ def aplicar_detecciones(detecciones: dict[str, Any], chat_id: int) -> dict:
         # Crear chat para la tarea
         task_slug = _slug(titulo)
         conn.execute(
-            "INSERT INTO chats (tipo, ref_id, nombre) VALUES (?, ?, ?)",
-            ("tarea", tarea_id, titulo),
+            "INSERT INTO chats (tipo, ref_id, nombre, user_id) VALUES (?, ?, ?, ?)",
+            ("tarea", tarea_id, titulo, user_id),
         )
 
     # ── Tareas actualizadas ───────────────────────────────────────────────
@@ -251,12 +255,11 @@ def aplicar_detecciones(detecciones: dict[str, Any], chat_id: int) -> dict:
         titulo = (t.get("titulo") or "").strip()
         if not titulo:
             continue
-        # SQLite no soporta ORDER BY en UPDATE — usar subquery
         if t.get("nuevo_estado"):
             conn.execute(
                 "UPDATE tareas SET estado = ? WHERE id = ("
-                "SELECT id FROM tareas WHERE titulo LIKE ? ORDER BY id DESC LIMIT 1)",
-                (t["nuevo_estado"], f"%{titulo}%"),
+                "SELECT id FROM tareas WHERE titulo LIKE ? AND user_id = ? ORDER BY id DESC LIMIT 1)",
+                (t["nuevo_estado"], f"%{titulo}%", user_id),
             )
             reporte["tareas_actualizadas"].append({
                 "titulo": titulo,
@@ -265,15 +268,13 @@ def aplicar_detecciones(detecciones: dict[str, Any], chat_id: int) -> dict:
         if t.get("nueva_prioridad"):
             conn.execute(
                 "UPDATE tareas SET prioridad = ? WHERE id = ("
-                "SELECT id FROM tareas WHERE titulo LIKE ? ORDER BY id DESC LIMIT 1)",
-                (t["nueva_prioridad"], f"%{titulo}%"),
+                "SELECT id FROM tareas WHERE titulo LIKE ? AND user_id = ? ORDER BY id DESC LIMIT 1)",
+                (t["nueva_prioridad"], f"%{titulo}%", user_id),
             )
             reporte["tareas_actualizadas"].append({
                 "titulo": titulo,
                 "cambio": f"prioridad → {t['nueva_prioridad']}"
             })
-
-    # ── Acciones estructurales (ELIMINADO - usar detectar_acciones_estructurales en api/chat.py) ────
 
     conn.commit()
     conn.close()
@@ -323,43 +324,44 @@ CONTEXTO DE SUBGRUPOS:
 	- parent_id = id del grupo padre (null si es grupo raiz)"""
 
 
-def _obtener_estado_db(chat_id: int) -> tuple[str, int | None]:
-    """Retorna descripción textual del estado DB relevante al chat y el grupo_id si aplica."""
+def _obtener_estado_db(chat_id: int, user_id: int) -> tuple[str, int | None]:
+    """Retorna descripción textual del estado DB relevante al chat y el grupo_id si aplica.
+    Filtra por user_id."""
     conn = get_db()
-    chat = conn.execute("SELECT tipo, ref_id, nombre FROM chats WHERE id=?", (chat_id,)).fetchone()
+    chat = conn.execute("SELECT tipo, ref_id, nombre FROM chats WHERE id=? AND user_id=?", (chat_id, user_id)).fetchone()
 
     lineas = []
     grupo_activo_id = None
 
     if chat and chat["tipo"] == "grupo" and chat["ref_id"]:
         grupo_activo_id = chat["ref_id"]
-        g = conn.execute("SELECT id, nombre, parent_id FROM grupos WHERE id=?", (grupo_activo_id,)).fetchone()
+        g = conn.execute("SELECT id, nombre, parent_id FROM grupos WHERE id=? AND user_id=?", (grupo_activo_id, user_id)).fetchone()
         if g:
             # Mostrar info de padre si es subgrupo
             if g["parent_id"]:
-                padre = conn.execute("SELECT nombre FROM grupos WHERE id=?", (g["parent_id"],)).fetchone()
+                padre = conn.execute("SELECT nombre FROM grupos WHERE id=? AND user_id=?", (g["parent_id"], user_id)).fetchone()
                 if padre:
                     lineas.append(f'  Subgrupo de: "{padre["nombre"]}"')
             lineas.append(f'Grupo activo: "{g["nombre"]}" (id={g["id"]})')
             tareas = conn.execute(
-                "SELECT id, titulo, estado FROM tareas WHERE grupo_id=?", (g["id"],)
+                "SELECT id, titulo, estado FROM tareas WHERE grupo_id=? AND user_id=?", (g["id"], user_id)
             ).fetchall()
             for t in tareas:
                 lineas.append(f'  - Tarea id={t["id"]}: "{t["titulo"]}" ({t["estado"]})')
     else:
-        grupos = conn.execute("SELECT id, nombre, parent_id FROM grupos").fetchall()
+        grupos = conn.execute("SELECT id, nombre, parent_id FROM grupos WHERE user_id=?", (user_id,)).fetchall()
         for g in grupos:
             prefix = "Subgrupo ─ " if g["parent_id"] else "Grupo ─ "
             lineas.append(f'{prefix}"{g["nombre"]}" (id={g["id"]}):')
             tareas = conn.execute(
-                "SELECT id, titulo, estado FROM tareas WHERE grupo_id=?", (g["id"],)
+                "SELECT id, titulo, estado FROM tareas WHERE grupo_id=? AND user_id=?", (g["id"], user_id)
             ).fetchall()
             for t in tareas:
                 lineas.append(f'  - Tarea id={t["id"]}: "{t["titulo"]}" ({t["estado"]})')
 
         # Mostrar tareas sueltas (sin grupo)
         tareas_sueltas = conn.execute(
-            "SELECT id, titulo, estado FROM tareas WHERE grupo_id IS NULL"
+            "SELECT id, titulo, estado FROM tareas WHERE grupo_id IS NULL AND user_id=?", (user_id,)
         ).fetchall()
         if tareas_sueltas:
             lineas.append("Tareas sueltas (sin grupo):")
@@ -370,8 +372,9 @@ def _obtener_estado_db(chat_id: int) -> tuple[str, int | None]:
     return "\n".join(lineas) or "(sin grupos ni tareas)", grupo_activo_id
 
 
-def ejecutar_acciones_por_id(acciones: list[dict], chat_id: int) -> list[dict]:
+def ejecutar_acciones_por_id(acciones: list[dict], chat_id: int, user_id: int) -> list[dict]:
     """Ejecuta acciones estructurales usando IDs exactos de DB.
+    Filtra todas las operaciones por user_id.
 
     Retorna lista de reportes: [{"accion": "...", "exito": bool, "detalle": "..."}]
     """
@@ -390,10 +393,10 @@ def ejecutar_acciones_por_id(acciones: list[dict], chat_id: int) -> list[dict]:
                     reportes.append({"accion": "crear_grupo", "exito": False, "detalle": "falta nombre"})
                     continue
                 slug = nombre.lower()
-                # Verificar si ya existe
+                # Verificar si ya existe (solo dentro del usuario)
                 exists = conn.execute(
-                    "SELECT id FROM grupos WHERE lower(slug)=? OR lower(nombre)=?",
-                    (slug, slug),
+                    "SELECT id FROM grupos WHERE (lower(slug)=? OR lower(nombre)=?) AND user_id=?",
+                    (slug, slug, user_id),
                 ).fetchone()
                 if exists:
                     reportes.append({
@@ -403,14 +406,14 @@ def ejecutar_acciones_por_id(acciones: list[dict], chat_id: int) -> list[dict]:
                     })
                     continue
                 if parent_id:
-                    conn.execute("INSERT INTO grupos (slug, nombre, parent_id) VALUES (?, ?, ?)", (slug, nombre, parent_id))
+                    conn.execute("INSERT INTO grupos (slug, nombre, parent_id, user_id) VALUES (?, ?, ?, ?)", (slug, nombre, parent_id, user_id))
                 else:
-                    conn.execute("INSERT INTO grupos (slug, nombre) VALUES (?, ?)", (slug, nombre))
+                    conn.execute("INSERT INTO grupos (slug, nombre, user_id) VALUES (?, ?, ?)", (slug, nombre, user_id))
                 gid = conn.execute("SELECT MAX(id) FROM grupos").fetchone()[0]
                 # Crear chat del grupo usando la MISMA conexión (evitar lock anidado)
                 conn.execute(
-                    "INSERT INTO chats (tipo, ref_id, nombre) VALUES ('grupo', ?, ?)",
-                    (gid, nombre),
+                    "INSERT INTO chats (tipo, ref_id, nombre, user_id) VALUES ('grupo', ?, ?, ?)",
+                    (gid, nombre, user_id),
                 )
                 chat_id_grupo = conn.execute("SELECT MAX(id) FROM chats").fetchone()[0]
                 conn.execute(
@@ -433,7 +436,7 @@ def ejecutar_acciones_por_id(acciones: list[dict], chat_id: int) -> list[dict]:
                 # Validar grupo_id si se pasó
                 grupo_nombre = None
                 if gid:
-                    g = conn.execute("SELECT nombre FROM grupos WHERE id=?", (gid,)).fetchone()
+                    g = conn.execute("SELECT nombre FROM grupos WHERE id=? AND user_id=?", (gid, user_id)).fetchone()
                     if not g:
                         reportes.append({
                             "accion": "crear_tarea",
@@ -443,13 +446,13 @@ def ejecutar_acciones_por_id(acciones: list[dict], chat_id: int) -> list[dict]:
                         continue
                     grupo_nombre = g["nombre"]
                 conn.execute(
-                    "INSERT INTO tareas (grupo_id, titulo, prioridad) VALUES (?, ?, ?)",
-                    (gid, titulo, prioridad),
+                    "INSERT INTO tareas (grupo_id, titulo, prioridad, user_id) VALUES (?, ?, ?, ?)",
+                    (gid, titulo, prioridad, user_id),
                 )
                 tid = conn.execute("SELECT MAX(id) FROM tareas").fetchone()[0]
                 conn.execute(
-                    "INSERT INTO chats (tipo, ref_id, nombre) VALUES (?, ?, ?)",
-                    ("tarea", tid, titulo),
+                    "INSERT INTO chats (tipo, ref_id, nombre, user_id) VALUES (?, ?, ?, ?)",
+                    ("tarea", tid, titulo, user_id),
                 )
                 grupo_str = f" en \"{grupo_nombre}\"" if grupo_nombre else ""
                 reportes.append({
@@ -463,17 +466,17 @@ def ejecutar_acciones_por_id(acciones: list[dict], chat_id: int) -> list[dict]:
                 if not tid:
                     reportes.append({"accion": "eliminar_tarea", "exito": False, "detalle": "falta id"})
                     continue
-                row = conn.execute("SELECT titulo FROM tareas WHERE id=?", (tid,)).fetchone()
+                row = conn.execute("SELECT titulo FROM tareas WHERE id=? AND user_id=?", (tid, user_id)).fetchone()
                 if not row:
                     reportes.append({"accion": "eliminar_tarea", "exito": False, "detalle": f"tarea id={tid} no existe"})
                     continue
                 titulo = row["titulo"]
                 conn.execute(
                     "DELETE FROM mensajes WHERE chat_id IN "
-                    "(SELECT id FROM chats WHERE tipo='tarea' AND ref_id=?)", (tid,)
+                    "(SELECT id FROM chats WHERE tipo='tarea' AND ref_id=? AND user_id=?)", (tid, user_id)
                 )
-                conn.execute("DELETE FROM chats WHERE tipo='tarea' AND ref_id=?", (tid,))
-                conn.execute("DELETE FROM tareas WHERE id=?", (tid,))
+                conn.execute("DELETE FROM chats WHERE tipo='tarea' AND ref_id=? AND user_id=?", (tid, user_id))
+                conn.execute("DELETE FROM tareas WHERE id=? AND user_id=?", (tid, user_id))
                 reportes.append({"accion": "eliminar_tarea", "exito": True, "detalle": f"Tarea eliminada: \"{titulo}\""})
 
             elif tipo == "eliminar_grupo":
@@ -481,7 +484,7 @@ def ejecutar_acciones_por_id(acciones: list[dict], chat_id: int) -> list[dict]:
                 if not gid:
                     reportes.append({"accion": "eliminar_grupo", "exito": False, "detalle": "falta id"})
                     continue
-                total = _eliminar_grupo_recursivo(conn, gid)
+                total = _eliminar_grupo_recursivo(conn, gid, user_id)
                 if total is None:
                     reportes.append({"accion": "eliminar_grupo", "exito": False, "detalle": f"grupo id={gid} no existe"})
                 else:
@@ -501,16 +504,16 @@ def ejecutar_acciones_por_id(acciones: list[dict], chat_id: int) -> list[dict]:
                 # intentar por nombre (útil cuando el grupo se creó en el mismo lote)
                 g = None
                 if gid:
-                    g = conn.execute("SELECT id, nombre FROM grupos WHERE id=?", (gid,)).fetchone()
+                    g = conn.execute("SELECT id, nombre FROM grupos WHERE id=? AND user_id=?", (gid, user_id)).fetchone()
                 if not g and gnombre:
                     g = conn.execute(
-                        "SELECT id, nombre FROM grupos WHERE nombre LIKE ? ORDER BY id DESC LIMIT 1",
-                        (f"%{gnombre}%",),
+                        "SELECT id, nombre FROM grupos WHERE nombre LIKE ? AND user_id=? ORDER BY id DESC LIMIT 1",
+                        (f"%{gnombre}%", user_id),
                     ).fetchone()
                 if not g:
                     reportes.append({"accion": "mover_tarea", "exito": False, "detalle": "grupo destino no encontrado"})
                     continue
-                t = conn.execute("SELECT titulo, grupo_id FROM tareas WHERE id=?", (tid,)).fetchone()
+                t = conn.execute("SELECT titulo, grupo_id FROM tareas WHERE id=? AND user_id=?", (tid, user_id)).fetchone()
                 if not t:
                     reportes.append({"accion": "mover_tarea", "exito": False, "detalle": "tarea no existe"})
                     continue
@@ -520,7 +523,7 @@ def ejecutar_acciones_por_id(acciones: list[dict], chat_id: int) -> list[dict]:
                         "detalle": f"Tarea \"{t['titulo']}\" ya está en \"{g['nombre']}\""
                     })
                     continue
-                conn.execute("UPDATE tareas SET grupo_id=? WHERE id=?", (g["id"], tid))
+                conn.execute("UPDATE tareas SET grupo_id=? WHERE id=? AND user_id=?", (g["id"], tid, user_id))
                 reportes.append({
                     "accion": "mover_tarea",
                     "exito": True,
@@ -536,14 +539,14 @@ def ejecutar_acciones_por_id(acciones: list[dict], chat_id: int) -> list[dict]:
                 if c_tipo == "grupo":
                     row = conn.execute(
                         "SELECT c.id FROM chats c JOIN grupos g ON g.id=c.ref_id "
-                        "WHERE c.tipo='grupo' AND (lower(g.slug)=? OR lower(g.nombre)=?)",
-                        (c_nombre.lower(), c_nombre.lower()),
+                        "WHERE c.tipo='grupo' AND (lower(g.slug)=? OR lower(g.nombre)=?) AND g.user_id=? AND c.user_id=?",
+                        (c_nombre.lower(), c_nombre.lower(), user_id, user_id),
                     ).fetchone()
                 else:
                     row = conn.execute(
                         "SELECT c.id FROM chats c JOIN tareas t ON t.id=c.ref_id "
-                        "WHERE c.tipo='tarea' AND t.titulo LIKE ?",
-                        ("%" + c_nombre + "%",),
+                        "WHERE c.tipo='tarea' AND t.titulo LIKE ? AND t.user_id=? AND c.user_id=?",
+                        ("%" + c_nombre + "%", user_id, user_id),
                     ).fetchone()
                 if row:
                     conn.execute(
@@ -568,13 +571,14 @@ def detectar_acciones_estructurales(
     mensaje_usuario: str,
     respuesta_coach: str,
     chat_id: int,
+    user_id: int = 0,
 ) -> list[dict]:
     """Detecta acciones estructurales usando IDs exactos de DB.
 
     A diferencia de detectar_entidades(), esta función recibe el estado real
     de la DB y pide al LLM que mapee la intención a IDs concretos.
     """
-    estado_db, _ = _obtener_estado_db(chat_id)
+    estado_db, _ = _obtener_estado_db(chat_id, user_id)
 
     prompt = _ACCIONES_PROMPT.format(
         mensaje_usuario=mensaje_usuario[:500],
@@ -604,12 +608,12 @@ def detectar_acciones_estructurales(
         acciones = json.loads(raw[inicio:fin + 1])
         print(f"  [ACCIONES] Parsed: {acciones}", flush=True)
         # Filtrar acciones con IDs inválidos (LLM puede alucinar)
-        acciones = _filtrar_acciones_validas(acciones)
+        acciones = _filtrar_acciones_validas(acciones, user_id)
         print(f"  [ACCIONES] Filtradas: {acciones}", flush=True)
 
         # Fallback: si el LLM no detectó nada, intentar por patrones en el texto del coach
         if not acciones:
-            acciones = _detectar_por_patron(respuesta_coach, chat_id)
+            acciones = _detectar_por_patron(respuesta_coach, chat_id, user_id)
             if acciones:
                 print(f"  [ACCIONES] Detectadas por patrón: {acciones}", flush=True)
 
@@ -619,20 +623,20 @@ def detectar_acciones_estructurales(
         return []
 
 
-def _detectar_por_patron(respuesta_coach: str, chat_id: int) -> list[dict]:
+def _detectar_por_patron(respuesta_coach: str, chat_id: int, user_id: int) -> list[dict]:
     """Detecta acciones por patrones textuales cuando el LLM falla."""
     import re
     acciones = []
     conn = get_db()
     try:
-        # Obtener grupo activo
-        chat = conn.execute("SELECT tipo, ref_id FROM chats WHERE id=?", (chat_id,)).fetchone()
+        # Obtener grupo activo (filtrado por user_id)
+        chat = conn.execute("SELECT tipo, ref_id FROM chats WHERE id=? AND user_id=?", (chat_id, user_id)).fetchone()
         grupo_id = None
         if chat and chat["tipo"] == "grupo" and chat["ref_id"]:
             grupo_id = chat["ref_id"]
         elif chat and chat["tipo"] == "tarea" and chat["ref_id"]:
-            # Si es chat de tarea, obtener grupo de la tarea
-            t = conn.execute("SELECT grupo_id FROM tareas WHERE id=?", (chat["ref_id"],)).fetchone()
+            # Si es chat de tarea, obtener grupo de la tarea (filtrado por user_id)
+            t = conn.execute("SELECT grupo_id FROM tareas WHERE id=? AND user_id=?", (chat["ref_id"], user_id)).fetchone()
             if t:
                 grupo_id = t["grupo_id"]
         else:
@@ -640,16 +644,14 @@ def _detectar_por_patron(respuesta_coach: str, chat_id: int) -> list[dict]:
             conn.close()
             return []
 
-        # Obtener tareas del grupo activo
+        # Obtener tareas del grupo activo (filtrado por user_id)
         tareas = conn.execute(
-            "SELECT id, titulo FROM tareas WHERE grupo_id=?", (grupo_id,)
+            "SELECT id, titulo FROM tareas WHERE grupo_id=? AND user_id=?", (grupo_id, user_id)
         ).fetchall()
 
         text = respuesta_coach.lower()
 
         # --- Detectar ELIMINAR ---
-        # Patrones: cualquier forma de "eliminad", "eliminé", "borr", "quit"
-        # o que el coach diga que algo ya no existe/está borrado
         if any(p in text for p in ["eliminad", "eliminé", "borr", "quit", "ya no existe", "ya no aparece", "está borrad"]):
             for t in tareas:
                 titulo_lower = t["titulo"].lower()
@@ -658,7 +660,6 @@ def _detectar_por_patron(respuesta_coach: str, chat_id: int) -> list[dict]:
 
         # --- Detectar MOVER ---
         if "he movido" in text or "moví" in text or "quedaron en" in text:
-            # Buscar menciones de tareas en el texto
             gnombre = None
             m = re.search(r'(?:subgrupo|grupo)\s*[""]?([^""\n]+?)[""]?', text)
             if m:
@@ -677,15 +678,15 @@ def _detectar_por_patron(respuesta_coach: str, chat_id: int) -> list[dict]:
     return acciones
 
 
-def _filtrar_acciones_validas(acciones: list[dict]) -> list[dict]:
-    """Elimina acciones que referencian IDs que no existen en DB."""
+def _filtrar_acciones_validas(acciones: list[dict], user_id: int) -> list[dict]:
+    """Elimina acciones que referencian IDs que no existen en DB (filtrados por user_id)."""
     if not acciones:
         return []
     conn = get_db()
     try:
-        # Recopilar IDs reales
-        ids_tareas = {r["id"] for r in conn.execute("SELECT id FROM tareas").fetchall()}
-        ids_grupos = {r["id"] for r in conn.execute("SELECT id FROM grupos").fetchall()}
+        # Recopilar IDs reales del usuario
+        ids_tareas = {r["id"] for r in conn.execute("SELECT id FROM tareas WHERE user_id=?", (user_id,)).fetchall()}
+        ids_grupos = {r["id"] for r in conn.execute("SELECT id FROM grupos WHERE user_id=?", (user_id,)).fetchall()}
     finally:
         conn.close()
 
@@ -696,12 +697,12 @@ def _filtrar_acciones_validas(acciones: list[dict]) -> list[dict]:
             if a.get("id") in ids_tareas:
                 validas.append(a)
             else:
-                print(f"  [FILTER] Ignorada {tipo} id={a.get('id')} (no existe)", flush=True)
+                print(f"  [FILTER] Ignorada {tipo} id={a.get('id')} (no existe para este usuario)", flush=True)
         elif tipo in ("eliminar_grupo",):
             if a.get("id") in ids_grupos:
                 validas.append(a)
             else:
-                print(f"  [FILTER] Ignorada {tipo} id={a.get('id')} (no existe)", flush=True)
+                print(f"  [FILTER] Ignorada {tipo} id={a.get('id')} (no existe para este usuario)", flush=True)
         elif tipo == "mover_tarea":
             tid = a.get("tarea_id")
             gid = a.get("grupo_id")
@@ -709,45 +710,46 @@ def _filtrar_acciones_validas(acciones: list[dict]) -> list[dict]:
             if tid in ids_tareas and (gid in ids_grupos or gnombre):
                 validas.append(a)
             else:
-                print(f"  [FILTER] Ignorada {tipo} (IDs no existen)", flush=True)
+                print(f"  [FILTER] Ignorada {tipo} (IDs no existen para este usuario)", flush=True)
         elif tipo == "crear_tarea":
             # grupo_id puede ser None, pero si está debe existir
             gid = a.get("grupo_id")
             if gid is None or gid in ids_grupos:
                 validas.append(a)
             else:
-                print(f"  [FILTER] Ignorada crear_tarea: grupo_id={gid} no existe", flush=True)
+                print(f"  [FILTER] Ignorada crear_tarea: grupo_id={gid} no existe para este usuario", flush=True)
         else:
             # crear_grupo y otros sin IDs: pasan
             validas.append(a)
     return validas
 
 
-def _eliminar_grupo_recursivo(conn, gid: int) -> int | None:
+def _eliminar_grupo_recursivo(conn, gid: int, user_id: int) -> int | None:
     """Elimina grupo recursivamente (subgrupos + tareas + chats).
+    Filtra todas las operaciones por user_id.
     Retorna cantidad total de tareas eliminadas o None si no existe."""
-    g = conn.execute("SELECT nombre FROM grupos WHERE id=?", (gid,)).fetchone()
+    g = conn.execute("SELECT nombre FROM grupos WHERE id=? AND user_id=?", (gid, user_id)).fetchone()
     if not g:
         return None
     total = 0
-    hijos = conn.execute("SELECT id FROM grupos WHERE parent_id=?", (gid,)).fetchall()
+    hijos = conn.execute("SELECT id FROM grupos WHERE parent_id=? AND user_id=?", (gid, user_id)).fetchall()
     for h in hijos:
-        total += _eliminar_grupo_recursivo(conn, h["id"])
-    tids = conn.execute("SELECT id FROM tareas WHERE grupo_id=?", (gid,)).fetchall()
+        total += _eliminar_grupo_recursivo(conn, h["id"], user_id)
+    tids = conn.execute("SELECT id FROM tareas WHERE grupo_id=? AND user_id=?", (gid, user_id)).fetchall()
     for t in tids:
         chat = conn.execute(
-            "SELECT id FROM chats WHERE tipo='tarea' AND ref_id=?", (t["id"],)
+            "SELECT id FROM chats WHERE tipo='tarea' AND ref_id=? AND user_id=?", (t["id"], user_id)
         ).fetchone()
         if chat:
             conn.execute("DELETE FROM mensajes WHERE chat_id=?", (chat["id"],))
-            conn.execute("DELETE FROM chats WHERE id=?", (chat["id"],))
-    conn.execute("DELETE FROM tareas WHERE grupo_id=?", (gid,))
+            conn.execute("DELETE FROM chats WHERE id=? AND user_id=?", (chat["id"], user_id))
+    conn.execute("DELETE FROM tareas WHERE grupo_id=? AND user_id=?", (gid, user_id))
     total += len(tids)
     chat = conn.execute(
-        "SELECT id FROM chats WHERE tipo='grupo' AND ref_id=?", (gid,)
+        "SELECT id FROM chats WHERE tipo='grupo' AND ref_id=? AND user_id=?", (gid, user_id)
     ).fetchone()
     if chat:
         conn.execute("DELETE FROM mensajes WHERE chat_id=?", (chat["id"],))
-        conn.execute("DELETE FROM chats WHERE id=?", (chat["id"],))
-    conn.execute("DELETE FROM grupos WHERE id=?", (gid,))
+        conn.execute("DELETE FROM chats WHERE id=? AND user_id=?", (chat["id"], user_id))
+    conn.execute("DELETE FROM grupos WHERE id=? AND user_id=?", (gid, user_id))
     return total

@@ -5,6 +5,7 @@ import sqlite3
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS perfiles (
     id          INTEGER PRIMARY KEY,
+    user_id     INTEGER REFERENCES usuarios(id),
     nombre      TEXT DEFAULT '',
     metas       TEXT DEFAULT '[]',
     estado      TEXT DEFAULT '',
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS grupos (
     nombre      TEXT NOT NULL,
     icono       TEXT DEFAULT '📁',
     parent_id   INTEGER REFERENCES grupos(id),
+    user_id     INTEGER REFERENCES usuarios(id),
     orden       INTEGER DEFAULT 0,
     creado_en   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -35,6 +37,7 @@ CREATE TABLE IF NOT EXISTS grupos (
 CREATE TABLE IF NOT EXISTS tareas (
     id           INTEGER PRIMARY KEY,
     grupo_id     INTEGER REFERENCES grupos(id),
+    user_id      INTEGER REFERENCES usuarios(id),
     titulo       TEXT NOT NULL,
     descripcion  TEXT DEFAULT '',
     prioridad    TEXT DEFAULT 'media',
@@ -49,6 +52,7 @@ CREATE TABLE IF NOT EXISTS chats (
     id          INTEGER PRIMARY KEY,
     tipo        TEXT NOT NULL,
     ref_id      INTEGER,
+    user_id     INTEGER REFERENCES usuarios(id),
     nombre      TEXT NOT NULL,
     creado_en   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -72,8 +76,12 @@ MIGRATIONS_SQL = [
     "ALTER TABLE usuarios ADD COLUMN username TEXT UNIQUE",
     "ALTER TABLE usuarios ADD COLUMN password_hash TEXT DEFAULT ''",
     "ALTER TABLE grupos ADD COLUMN parent_id INTEGER REFERENCES grupos(id)",
+    "ALTER TABLE grupos ADD COLUMN user_id INTEGER REFERENCES usuarios(id)",
     "ALTER TABLE tareas ADD COLUMN recurrencia TEXT DEFAULT NULL",
     "ALTER TABLE tareas ADD COLUMN progreso INTEGER DEFAULT 0",
+    "ALTER TABLE tareas ADD COLUMN user_id INTEGER REFERENCES usuarios(id)",
+    "ALTER TABLE chats ADD COLUMN user_id INTEGER REFERENCES usuarios(id)",
+    "ALTER TABLE perfiles ADD COLUMN user_id INTEGER REFERENCES usuarios(id)",
 ]
 
 

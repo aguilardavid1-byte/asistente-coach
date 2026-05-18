@@ -3,20 +3,20 @@
 from db import get_db
 
 
-def asegurar_chat_grupo(grupo_id: int, slug: str, nombre: str) -> int | None:
+def asegurar_chat_grupo(grupo_id: int, slug: str, nombre: str, user_id: int) -> int | None:
     """Crea el chat de un grupo si no existe. Retorna el chat_id."""
     conn = get_db()
     existente = conn.execute(
-        "SELECT id FROM chats WHERE tipo = 'grupo' AND ref_id = ?",
-        (grupo_id,),
+        "SELECT id FROM chats WHERE tipo = 'grupo' AND ref_id = ? AND user_id = ?",
+        (grupo_id, user_id),
     ).fetchone()
     if existente:
         conn.close()
         return existente["id"]
 
     conn.execute(
-        "INSERT INTO chats (tipo, ref_id, nombre) VALUES ('grupo', ?, ?)",
-        (grupo_id, nombre),
+        "INSERT INTO chats (tipo, ref_id, nombre, user_id) VALUES ('grupo', ?, ?, ?)",
+        (grupo_id, nombre, user_id),
     )
     chat_id = conn.execute("SELECT MAX(id) FROM chats").fetchone()[0]
 
@@ -30,15 +30,15 @@ def asegurar_chat_grupo(grupo_id: int, slug: str, nombre: str) -> int | None:
     return chat_id
 
 
-def asegurar_chats_grupos() -> int:
+def asegurar_chats_grupos(user_id: int = 1) -> int:
     """Crea chats para todos los grupos que no tengan uno. Retorna cuantos creó."""
     conn = get_db()
-    grupos = conn.execute("SELECT id, slug, nombre FROM grupos").fetchall()
+    grupos = conn.execute("SELECT id, slug, nombre FROM grupos WHERE user_id = ?", (user_id,)).fetchall()
     conn.close()
 
     creados = 0
     for g in grupos:
-        cid = asegurar_chat_grupo(g["id"], g["slug"], g["nombre"])
+        cid = asegurar_chat_grupo(g["id"], g["slug"], g["nombre"], user_id)
         if cid is not None:
             creados += 1
     return creados

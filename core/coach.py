@@ -14,10 +14,10 @@ from db import get_db
 _IMAGEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "imagenes")
 
 
-def _get_perfil():
+def _get_perfil(user_id: int):
     """Retorna el perfil del usuario (primera fila de perfiles)."""
     conn = get_db()
-    row = conn.execute("SELECT * FROM perfiles ORDER BY id LIMIT 1").fetchone()
+    row = conn.execute("SELECT * FROM perfiles WHERE user_id = ? ORDER BY id LIMIT 1", (user_id,)).fetchone()
     conn.close()
     if row:
         import json
@@ -29,23 +29,23 @@ def _get_perfil():
     return {"nombre": "", "metas": [], "estado": ""}
 
 
-def _get_chat_info(chat_id: int) -> dict:
-    """Retorna info del chat: tipo, ref_id, nombre."""
+def _get_chat_info(chat_id: int, user_id: int) -> dict:
+    """Retorna info del chat: tipo, ref_id, nombre. Filtra por user_id."""
     conn = get_db()
-    row = conn.execute("SELECT * FROM chats WHERE id = ?", (chat_id,)).fetchone()
+    row = conn.execute("SELECT * FROM chats WHERE id = ? AND user_id = ?", (chat_id, user_id)).fetchone()
     conn.close()
     if row:
         return {"id": row["id"], "tipo": row["tipo"], "ref_id": row["ref_id"], "nombre": row["nombre"]}
     return {"id": chat_id, "tipo": "general", "ref_id": None, "nombre": "General"}
 
 
-def _get_grupo_info(grupo_id: int) -> dict:
-    """Retorna info del grupo + lista de tareas."""
+def _get_grupo_info(grupo_id: int, user_id: int) -> dict:
+    """Retorna info del grupo + lista de tareas del usuario."""
     conn = get_db()
-    grupo = conn.execute("SELECT * FROM grupos WHERE id = ?", (grupo_id,)).fetchone()
+    grupo = conn.execute("SELECT * FROM grupos WHERE id = ? AND user_id = ?", (grupo_id, user_id)).fetchone()
     tareas = conn.execute(
-        "SELECT titulo, prioridad, estado FROM tareas WHERE grupo_id = ? ORDER BY prioridad",
-        (grupo_id,),
+        "SELECT titulo, prioridad, estado FROM tareas WHERE grupo_id = ? AND user_id = ? ORDER BY prioridad",
+        (grupo_id, user_id),
     ).fetchall()
     conn.close()
     if grupo:
@@ -56,10 +56,10 @@ def _get_grupo_info(grupo_id: int) -> dict:
     return {"nombre": "", "tareas": []}
 
 
-def _get_tarea_info(tarea_id: int) -> dict:
-    """Retorna info de una tarea."""
+def _get_tarea_info(tarea_id: int, user_id: int) -> dict:
+    """Retorna info de una tarea. Filtra por user_id."""
     conn = get_db()
-    row = conn.execute("SELECT * FROM tareas WHERE id = ?", (tarea_id,)).fetchone()
+    row = conn.execute("SELECT * FROM tareas WHERE id = ? AND user_id = ?", (tarea_id, user_id)).fetchone()
     conn.close()
     if row:
         return {
@@ -72,9 +72,16 @@ def _get_tarea_info(tarea_id: int) -> dict:
     return {}
 
 
-def get_historial(chat_id: int, limit: int = 50) -> list[dict]:
-    """Retorna los últimos N mensajes del chat como lista de {"role": ..., "content": ...}."""
+def get_historial(chat_id: int, user_id: int, limit: int = 50) -> list[dict]:
+    """Retorna los últimos N mensajes del chat como lista de {"role": ..., "content": ...}.
+    Verifica que el chat pertenezca al usuario.
+    """
     conn = get_db()
+    # Verificar que el chat pertenece al usuario
+    chat = conn.execute("SELECT id FROM chats WHERE id = ? AND user_id = ?", (chat_id, user_id)).fetchone()
+    if not chat:
+        conn.close()
+        return []
     rows = conn.execute(
         "SELECT rol, contenido FROM mensajes WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
         (chat_id, limit),
@@ -84,8 +91,8 @@ def get_historial(chat_id: int, limit: int = 50) -> list[dict]:
     return [{"role": r["rol"], "content": r["contenido"]} for r in rows]
 
 
-def _get_recordatorios() -> str:
-    """Retorna recordatorios de tareas recurrentes según el día."""
+def _get_recordatorios(user_id: int) -> str:
+    """Retorna recordatorios de tareas recurrentes según el día del usuario."""
     from datetime import datetime
     conn = get_db()
     dias = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
@@ -95,7 +102,8 @@ def _get_recordatorios() -> str:
     dia_mes = datetime.now().day
 
     rows = conn.execute(
-        "SELECT t.titulo, t.recurrencia, g.nombre as grupo FROM tareas t LEFT JOIN grupos g ON g.id=t.grupo_id WHERE t.recurrencia IS NOT NULL"
+        "SELECT t.titulo, t.recurrencia, g.nombre as grupo FROM tareas t LEFT JOIN grupos g ON g.id=t.grupo_id WHERE t.recurrencia IS NOT NULL AND t.user_id = ?",
+        (user_id,),
     ).fetchall()
     conn.close()
 
@@ -125,15 +133,15 @@ def _get_recordatorios() -> str:
     return ""
 
 
-def construir_system_prompt(chat_id: int, descripcion_imagen: str = "") -> str:
+def construir_system_prompt(chat_id: int, descripcion_imagen: str = "", user_id: int = 0) -> str:
     """Construye system prompt según el contexto del chat (general / grupo / tarea)."""
-    perfil = _get_perfil()
-    chat = _get_chat_info(chat_id)
+    perfil = _get_perfil(user_id)
+    chat = _get_chat_info(chat_id, user_id)
 
     nombre = perfil["nombre"] or "amigo"
     metas = ", ".join(perfil["metas"]) if perfil["metas"] else "aún no definidas"
     estado = perfil["estado"] or "desconocido"
-    recordatorios = _get_recordatorios()
+    recordatorios = _get_recordatorios(user_id)
 
     base = f"""Eres un coach de vida empático. Hablas en español natural y cálido.
 Conoces a {nombre}. Sus metas: {metas}. Su estado actual: {estado}.
@@ -154,7 +162,7 @@ REGLAS:
 - CLASIFICA automáticamente lo que {nombre} menciona en su objetivo correcto
 - No esperes a que pida organización explícitamente — actúa cuando sea obvio
 - Si menciona algo de la universidad/maestría/materias → agéndalo en "Maestría al día"
-- Si menciona limpieza, desorden, casa, lavar, cocinar → agéndalo en "Casa en orden"  
+- Si menciona limpieza, desorden, casa, lavar, cocinar → agéndalo en "Casa en orden"
 - Si menciona planear clases, estudiantes, enseñanza, colegio → agéndalo en "Docencia eficiente"
 - Si menciona barba, cabeza, calvo, zapatos, ropa, presentación, compras de vestimenta → agéndalo en "Presentación personal"
 - Si menciona ejercicio, calistenia, rutina, salud, deporte → agéndalo en "Salud y ejercicio"
@@ -173,11 +181,11 @@ IMPORTANTE — Cuando indiques que ya ejecutaste una acción, USA SIEMPRE PASADO
 
     if chat["tipo"] == "general" or (chat["tipo"] != "grupo" and chat["tipo"] != "tarea"):
         conn = get_db()
-        grupos = conn.execute("SELECT id, nombre FROM grupos ORDER BY nombre").fetchall()
+        grupos = conn.execute("SELECT id, nombre FROM grupos WHERE user_id = ? ORDER BY nombre", (user_id,)).fetchall()
         grupos_info = []
         for g in grupos:
             count = conn.execute(
-                "SELECT COUNT(*) FROM tareas WHERE grupo_id=? AND estado != 'completada'", (g["id"],)
+                "SELECT COUNT(*) FROM tareas WHERE grupo_id=? AND user_id = ? AND estado != 'completada'", (g["id"], user_id),
             ).fetchone()[0]
             grupos_info.append(f'"{g["nombre"]}" ({count} tarea(s) activa(s))')
         conn.close()
@@ -203,7 +211,7 @@ ESPIRITU:
 Eres un coach que escucha, clasifica y actua. No esperes instrucciones explicitas para lo obvio."No seas pasivo. Si ves que algo le importa, ayuda a organizarlo."""
 
     elif chat["tipo"] == "grupo" and chat["ref_id"]:
-        info = _get_grupo_info(chat["ref_id"])
+        info = _get_grupo_info(chat["ref_id"], user_id)
         tareas_str = "\n".join(
             f"  - {t['titulo']} ({t['prioridad']}, {t['estado']})"
             for t in info["tareas"]
@@ -211,7 +219,7 @@ Eres un coach que escucha, clasifica y actua. No esperes instrucciones explicita
         # Obtener subgrupos
         conn2 = get_db()
         subgrupos = conn2.execute(
-            "SELECT id, nombre FROM grupos WHERE parent_id=?", (chat["ref_id"],)
+            "SELECT id, nombre FROM grupos WHERE parent_id=? AND user_id = ?", (chat["ref_id"], user_id),
         ).fetchall()
         conn2.close()
         subgrupos_str = "\n".join(
@@ -231,10 +239,10 @@ Ayuda a priorizar, hacer seguimiento y organizar el trabajo de este grupo.
 
 Si el usuario menciona una MATERIA o PROFESOR, sugiere crear un subgrupo para organizar sus tareas dentro de este grupo. El sistema creará automáticamente el subgrupo si el usuario acepta.
 
-	PROPAGACIÓN AUTOMÁTICA: Si el usuario comparte información (horario, fechas, instrucciones) que sea relevante para alguna tarea específica de este grupo, menciónalo en tu respuesta para que el sistema lo propague automáticamente al chat de cada tarea afectada."""
+		PROPAGACIÓN AUTOMÁTICA: Si el usuario comparte información (horario, fechas, instrucciones) que sea relevante para alguna tarea específica de este grupo, menciónalo en tu respuesta para que el sistema lo propague automáticamente al chat de cada tarea afectada."""
 
     elif chat["tipo"] == "tarea" and chat["ref_id"]:
-        info = _get_tarea_info(chat["ref_id"])
+        info = _get_tarea_info(chat["ref_id"], user_id)
         if info:
             base += f"""
 
@@ -270,6 +278,7 @@ def stream_respuesta(
     chat_id: int,
     mensaje: str,
     imagen_path: str | None = None,
+    user_id: int = 0,
 ) -> Generator[str, None, str]:
     """Stremea respuesta de DeepSeek y la persiste en DB.
 
@@ -289,8 +298,8 @@ def stream_respuesta(
         descripcion_imagen = analizar_imagen(imagen_path)
 
     # 3. Construir prompt e historial
-    system_prompt = construir_system_prompt(chat_id, descripcion_imagen)
-    historial = get_historial(chat_id)
+    system_prompt = construir_system_prompt(chat_id, descripcion_imagen, user_id)
+    historial = get_historial(chat_id, user_id)
 
     messages = [{"role": "system", "content": system_prompt}, *historial]
 

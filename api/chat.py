@@ -8,6 +8,7 @@ import tempfile
 from datetime import datetime
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
+from flask_login import current_user
 
 from config import BASE_DIR
 from core.coach import get_historial, stream_respuesta
@@ -105,7 +106,7 @@ def _extraer_acciones(texto: str) -> tuple[str, list]:
     return texto_limpio, acciones
 
 
-def _ejecutar_acciones(acciones: list, chat_id: int) -> None:
+def _ejecutar_acciones(acciones: list, chat_id: int, user_id: int) -> None:
     """Ejecuta acciones estructurales directamente en DB."""
     if not acciones:
         return
@@ -119,17 +120,17 @@ def _ejecutar_acciones(acciones: list, chat_id: int) -> None:
                 if not titulo:
                     continue
                 row = conn.execute(
-                    "SELECT id FROM tareas WHERE titulo = ? OR titulo LIKE ? LIMIT 1",
-                    (titulo, f"%{titulo}%"),
+                    "SELECT id FROM tareas WHERE user_id = ? AND (titulo = ? OR titulo LIKE ?) LIMIT 1",
+                    (user_id, titulo, f"%{titulo}%"),
                 ).fetchone()
                 if row:
                     tid = row["id"]
                     conn.execute(
                         "DELETE FROM mensajes WHERE chat_id IN "
-                        "(SELECT id FROM chats WHERE tipo='tarea' AND ref_id=?)", (tid,)
+                        "(SELECT id FROM chats WHERE tipo='tarea' AND ref_id=? AND user_id=?)", (tid, user_id)
                     )
-                    conn.execute("DELETE FROM chats WHERE tipo='tarea' AND ref_id=?", (tid,))
-                    conn.execute("DELETE FROM tareas WHERE id=?", (tid,))
+                    conn.execute("DELETE FROM chats WHERE tipo='tarea' AND ref_id=? AND user_id=?", (tid, user_id))
+                    conn.execute("DELETE FROM tareas WHERE id=? AND user_id=?", (tid, user_id))
                     print(f"  🗑 Tarea eliminada: '{titulo}'", flush=True)
                 else:
                     print(f"  ⚠ Tarea no encontrada: '{titulo}'", flush=True)
@@ -140,8 +141,8 @@ def _ejecutar_acciones(acciones: list, chat_id: int) -> None:
                 if not destino_nombre:
                     continue
                 destino = conn.execute(
-                    "SELECT id FROM grupos WHERE lower(slug) = ? OR lower(nombre) = ?",
-                    (destino_nombre, destino_nombre),
+                    "SELECT id FROM grupos WHERE user_id = ? AND (lower(slug) = ? OR lower(nombre) = ?)",
+                    (user_id, destino_nombre, destino_nombre),
                 ).fetchone()
                 if not destino:
                     continue
@@ -150,18 +151,18 @@ def _ejecutar_acciones(acciones: list, chat_id: int) -> None:
                 if titulos:
                     for t in titulos:
                         conn.execute(
-                            "UPDATE tareas SET grupo_id=? WHERE titulo=? OR titulo LIKE ?",
-                            (dest_id, t, f"%{t}%"),
+                            "UPDATE tareas SET grupo_id=? WHERE user_id=? AND (titulo=? OR titulo LIKE ?)",
+                            (dest_id, user_id, t, f"%{t}%"),
                         )
                 elif origen_nombre:
                     origen = conn.execute(
-                        "SELECT id FROM grupos WHERE lower(slug) = ? OR lower(nombre) = ?",
-                        (origen_nombre, origen_nombre),
+                        "SELECT id FROM grupos WHERE user_id = ? AND (lower(slug) = ? OR lower(nombre) = ?)",
+                        (user_id, origen_nombre, origen_nombre),
                     ).fetchone()
                     if origen:
                         conn.execute(
-                            "UPDATE tareas SET grupo_id=? WHERE grupo_id=?",
-                            (dest_id, origen["id"]),
+                            "UPDATE tareas SET grupo_id=? WHERE user_id=? AND grupo_id=?",
+                            (dest_id, user_id, origen["id"]),
                         )
                 print(f"  🔄 Tareas movidas a '{accion.get('grupo_destino', '')}'", flush=True)
 
@@ -170,21 +171,21 @@ def _ejecutar_acciones(acciones: list, chat_id: int) -> None:
                 if not grupo_nombre:
                     continue
                 g = conn.execute(
-                    "SELECT id, nombre FROM grupos WHERE lower(slug) = ? OR lower(nombre) = ?",
-                    (grupo_nombre, grupo_nombre),
+                    "SELECT id, nombre FROM grupos WHERE user_id = ? AND (lower(slug) = ? OR lower(nombre) = ?)",
+                    (user_id, grupo_nombre, grupo_nombre),
                 ).fetchone()
                 if g:
                     count = conn.execute(
-                        "SELECT COUNT(*) FROM tareas WHERE grupo_id=?", (g["id"],)
+                        "SELECT COUNT(*) FROM tareas WHERE user_id=? AND grupo_id=?", (user_id, g["id"])
                     ).fetchone()[0]
                     if count == 0:
                         chat = conn.execute(
-                            "SELECT id FROM chats WHERE tipo='grupo' AND ref_id=?", (g["id"],)
+                            "SELECT id FROM chats WHERE tipo='grupo' AND ref_id=? AND user_id=?", (g["id"], user_id)
                         ).fetchone()
                         if chat:
                             conn.execute("DELETE FROM mensajes WHERE chat_id=?", (chat["id"],))
-                            conn.execute("DELETE FROM chats WHERE id=?", (chat["id"],))
-                        conn.execute("DELETE FROM grupos WHERE id=?", (g["id"],))
+                            conn.execute("DELETE FROM chats WHERE id=? AND user_id=?", (chat["id"], user_id))
+                        conn.execute("DELETE FROM grupos WHERE id=? AND user_id=?", (g["id"], user_id))
                         print(f"  🗑 Grupo eliminado: '{g['nombre']}'", flush=True)
                     else:
                         print(f"  ⚠ Grupo '{g['nombre']}' tiene {count} tareas, no se eliminó", flush=True)
@@ -198,14 +199,16 @@ def _ejecutar_acciones(acciones: list, chat_id: int) -> None:
                 if c_tipo == "grupo":
                     chat = conn.execute(
                         """SELECT c.id FROM chats c JOIN grupos g ON g.id=c.ref_id
-                           WHERE c.tipo='grupo' AND (lower(g.slug)=? OR lower(g.nombre)=?)""",
-                        (c_nombre.lower(), c_nombre.lower()),
+                           WHERE c.tipo='grupo' AND (lower(g.slug)=? OR lower(g.nombre)=?)
+                           AND g.user_id=? AND c.user_id=?""",
+                        (c_nombre.lower(), c_nombre.lower(), user_id, user_id),
                     ).fetchone()
                 else:
                     chat = conn.execute(
                         """SELECT c.id FROM chats c JOIN tareas t ON t.id=c.ref_id
-                           WHERE c.tipo='tarea' AND t.titulo LIKE ?""",
-                        (f"%{c_nombre}%",),
+                           WHERE c.tipo='tarea' AND t.titulo LIKE ?
+                           AND t.user_id=? AND c.user_id=?""",
+                        (f"%{c_nombre}%", user_id, user_id),
                     ).fetchone()
                 if chat:
                     conn.execute(
@@ -219,7 +222,7 @@ def _ejecutar_acciones(acciones: list, chat_id: int) -> None:
         conn.close()
 
 
-def _propagar_si_aplica(chat_id: int, respuesta: str):
+def _propagar_si_aplica(chat_id: int, respuesta: str, user_id: int):
     """Si el coach menciona mover/organizar tareas, inyecta nota en hijos."""
     PALABRAS_CLAVE = [
         "moviendo", "moví", "organicé", "asigné",
@@ -229,14 +232,14 @@ def _propagar_si_aplica(chat_id: int, respuesta: str):
     if any(p in respuesta.lower() for p in PALABRAS_CLAVE):
         resumen = respuesta[:200].strip()
         from core.comentarios import inyectar_comentario
-        inyectar_comentario(chat_id, resumen)
+        inyectar_comentario(chat_id, resumen, user_id)
 
 
 @chat_bp.route("/chat/<int:chat_id>", methods=["GET"])
 def obtener_chat(chat_id):
     """GET /api/chat/<id> → historial completo + metadatos del chat."""
     conn = get_db()
-    chat = conn.execute("SELECT * FROM chats WHERE id = ?", (chat_id,)).fetchone()
+    chat = conn.execute("SELECT * FROM chats WHERE id = ? AND user_id = ?", (chat_id, current_user.id)).fetchone()
     if not chat:
         conn.close()
         return jsonify({"error": "Chat no encontrado"}), 404
@@ -276,14 +279,22 @@ def enviar_mensaje():
     if not chat_id or not mensaje:
         return jsonify({"error": "chat_id y mensaje requeridos"}), 400
 
+    user_id = current_user.id
     imagen_path = _salvar_imagen(data.get("imagen_base64") or "")
+
+    # Verificar que el chat pertenece al usuario
+    conn = get_db()
+    chat = conn.execute("SELECT id FROM chats WHERE id = ? AND user_id = ?", (chat_id, user_id)).fetchone()
+    conn.close()
+    if not chat:
+        return jsonify({"error": "Chat no encontrado"}), 404
 
     def generar_stream():
         texto_completo = ""
         chunks = []
         try:
             # 1. Obtener respuesta completa del coach (acumular chunks sin enviar aún)
-            for chunk in stream_respuesta(chat_id, mensaje, imagen_path):
+            for chunk in stream_respuesta(chat_id, mensaje, imagen_path, user_id):
                 texto_completo += chunk
                 chunks.append(chunk)
 
@@ -291,20 +302,20 @@ def enviar_mensaje():
             _log(f">>> Usuario (chat_id={chat_id}): {mensaje[:100]}")
             _log(f">>> Coach respondió: {texto_completo[:150]}")
 
-            acciones = detectar_acciones_estructurales(mensaje, texto_completo, chat_id)
+            acciones = detectar_acciones_estructurales(mensaje, texto_completo, chat_id, user_id)
             _log(f">>> Acciones detectadas: {acciones}")
 
             reportes_estructurales = []
             if acciones:
-                reportes_estructurales = ejecutar_acciones_por_id(acciones, chat_id)
+                reportes_estructurales = ejecutar_acciones_por_id(acciones, chat_id, user_id)
                 _log(f">>> Reportes: {reportes_estructurales}")
 
             # 3. Detector para tareas_nuevas y perfil
-            detecciones = detectar_entidades(texto_completo, chat_id)
-            reporte_creacion = aplicar_detecciones(detecciones, chat_id)
+            detecciones = detectar_entidades(texto_completo, chat_id, user_id)
+            reporte_creacion = aplicar_detecciones(detecciones, chat_id, user_id)
             _log(f">>> Reporte creación: {reporte_creacion}")
 
-            _propagar_si_aplica(chat_id, texto_completo)
+            _propagar_si_aplica(chat_id, texto_completo, user_id)
 
             # 4. Construir confirmaciones
             confirmaciones = _construir_confirmacion(reportes_estructurales, reporte_creacion)
