@@ -3,6 +3,7 @@
 import os
 import sys
 import re
+import sqlite3
 
 from flask import Blueprint, redirect, request, session, url_for
 from flask import current_app, render_template_string
