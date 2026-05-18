@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS grupos (
     slug        TEXT UNIQUE NOT NULL,
     nombre      TEXT NOT NULL,
     icono       TEXT DEFAULT '📁',
+    parent_id   INTEGER REFERENCES grupos(id),
     orden       INTEGER DEFAULT 0,
     creado_en   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -68,6 +69,7 @@ CREATE INDEX IF NOT EXISTS idx_chats_tipo ON chats(tipo);
 MIGRATIONS_SQL = [
     "ALTER TABLE usuarios ADD COLUMN username TEXT UNIQUE",
     "ALTER TABLE usuarios ADD COLUMN password_hash TEXT DEFAULT ''",
+    "ALTER TABLE grupos ADD COLUMN parent_id INTEGER REFERENCES grupos(id)",
 ]
 
 
