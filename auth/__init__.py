@@ -16,6 +16,8 @@ from db import get_db
 
 class Usuario(UserMixin):
     def __init__(self, row):
+        if isinstance(row, sqlite3.Row):
+            row = dict(row)
         self.id = row["id"]
         self.google_id = row.get("google_id")
         self.username = row.get("username")
