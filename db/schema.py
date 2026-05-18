@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS tareas (
     prioridad    TEXT DEFAULT 'media',
     estado       TEXT DEFAULT 'pendiente',
     fecha_limite TEXT,
+    recurrencia  TEXT DEFAULT NULL,
+    progreso     INTEGER DEFAULT 0,
     creado_en    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -70,6 +72,8 @@ MIGRATIONS_SQL = [
     "ALTER TABLE usuarios ADD COLUMN username TEXT UNIQUE",
     "ALTER TABLE usuarios ADD COLUMN password_hash TEXT DEFAULT ''",
     "ALTER TABLE grupos ADD COLUMN parent_id INTEGER REFERENCES grupos(id)",
+    "ALTER TABLE tareas ADD COLUMN recurrencia TEXT DEFAULT NULL",
+    "ALTER TABLE tareas ADD COLUMN progreso INTEGER DEFAULT 0",
 ]
 
 
