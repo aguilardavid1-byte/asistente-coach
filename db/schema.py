@@ -77,7 +77,7 @@ MIGRATIONS_SQL = [
 ]
 
 
-def crear_tablas(conn: sqlite3.Connection) -> None:
+def crear_tablas(conn) -> None:
     """Ejecuta el DDL de creación de tablas y migraciones."""
     conn.executescript(SCHEMA_SQL)
     conn.commit()

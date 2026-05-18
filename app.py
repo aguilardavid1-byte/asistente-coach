@@ -16,10 +16,11 @@ from auth import auth_bp, login_manager
 from config import PORT, SECRET_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
 from db.init_db import main as init_db
 from db.schema import crear_tablas
-from db import get_db
+from db import get_db, DATABASE_URL
 
 _appdir = os.path.dirname(os.path.abspath(__file__))
-if not os.path.exists(os.path.join(_appdir, "asistente.db")):
+_db_path = os.path.join(_appdir, "asistente.db")
+if not DATABASE_URL and not os.path.exists(_db_path):
     print("📦 Inicializando base de datos...")
     init_db()
 
